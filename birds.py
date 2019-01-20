@@ -1,4 +1,4 @@
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 unused import
+from mpl_toolkits.mplot3d import Axes3D
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,7 +8,7 @@ max_vel = .3
 
 NUM_BIRDS = 100
 EPS = 1e-4
-separation_weight = .01
+separation_weight = .5
 bound_weight = .01
 alignment_weight = 1.
 cohesion_weight = 1.
@@ -20,7 +20,7 @@ learning_rate = 5.
 fig = plt.figure()
 ax = fig.add_subplot(111, projection='3d')
 
-# some X and Y data
+
 x = np.random.randn(NUM_BIRDS)
 y = np.random.randn(NUM_BIRDS)
 z = np.random.randn(NUM_BIRDS)
@@ -56,7 +56,7 @@ def separation_loss(x, y, z):
     points_N13 = tf.reshape(points_N3, (NUM_BIRDS, 1, 3))
     dist_mat = tf.sqrt(tf.einsum('ijk,ijk->ij', points_N3-points_N13,
                                  points_N3-points_N13) + EPS)
-    return -tf.reduce_mean(dist_mat / 2.), dist_mat
+    return -tf.reduce_mean(1. / dist_mat / 2.), dist_mat
 
 
 def alignment_loss(pos_dist_mat):
@@ -84,7 +84,7 @@ def total_loss():
     sep_loss = tf.Print(sep_loss, [sep_loss], "SEP LOSS: ")
     align_loss = tf.Print(align_loss, [align_loss], "align LOSS: ")
     c_loss = tf.Print(c_loss, [c_loss], "cohesion LOSS: ")
-    boung_loss = tf.Print(bound_loss, [bound_loss], "bound LOSS: ")
+    bound_loss = tf.Print(bound_loss, [bound_loss], "bound LOSS: ")
     return sep_loss + align_loss + c_loss + bound_loss
 
 
