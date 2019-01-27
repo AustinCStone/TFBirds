@@ -110,17 +110,18 @@ def main():
     noise = np.random.randn(config['num_birds'], 3)
 
     for iteration in range(config['num_loops']):
-        print('On iteration {}'.format(iteration))
         try:
+            # Add some random noise to velocities to break loops and make things more
+            # interesting.
             if iteration % config['noise_update'] == 0:
                 noise = np.random.randn(config['num_birds'], 3) * config['noise_std']
 
-            _, l, new_vel_k3 = sess.run([train_op, loss, vel_xyz_k3],
+            _, _, new_vel_k3 = sess.run([train_op, loss, vel_xyz_k3],
                                         feed_dict={pos_xyz_ph_k3: pos_xyz_k3})
             pos_xyz_k3 += new_vel_k3 + noise
-            li, = ax.plot(pos_xyz_k3[:, 0],
-                          pos_xyz_k3[:, 1],
-                          pos_xyz_k3[:, 2], 'ro')
+            _, = ax.plot(pos_xyz_k3[:, 0],
+                         pos_xyz_k3[:, 1],
+                         pos_xyz_k3[:, 2], 'ro')
             ax.relim() 
             ax.autoscale_view(True, True, True)
             plt.show(block=False)
