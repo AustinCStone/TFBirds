@@ -1,3 +1,12 @@
+""" Bird flocking simulator in tensorflow.
+
+See https://en.wikipedia.org/wiki/Flocking_(behavior)
+In particular:
+    Separation - avoid crowding neighbours (short range repulsion)
+    Alignment - steer towards average heading of neighbours
+    Cohesion - steer towards average position of neighbours (long range attraction)
+"""
+
 from mpl_toolkits.mplot3d import Axes3D
 import tensorflow as tf
 import matplotlib.pyplot as plt
@@ -13,41 +22,55 @@ def get_dist_mat(xyz_k3):
                              xyz_k3 - xyz_k13) + config['epsilon'])
 
 
+def top_k_euclidean_difference(pos_dist_mat_kk, xyz_k3, k, goal_dist=None):
+    """ Compute the mean euclidean distance for the k nearest neighbors
+    in xyz_k3. As an optimization, the precomputed distance matrix,
+    pos_dist_mat_kk is accepted as an input argument. """
+    top_k_inds_kk = tf.nn.top_k(-pos_dist_mat_kk, k).indices
+    top_k_inds_kk_split = tf.unstack(top_k_inds_kk, axis=0)
+    loss = 0.
+    for bird_num, top_k_inds in enumerate(top_k_inds_kk_split):
+        neighbors_xyz_k3 = tf.gather(xyz_k3, top_k_inds)
+        dists_k = tf.sqrt(
+            tf.reduce_sum((xyz_k3[bird_num] - neighbors_xyz_k3) ** 2., axis=1) + config['epsilon'])
+        if goal_dist is not None:
+            dists_k = tf.abs(dists_k - goal_dist)
+        loss += tf.reduce_mean(dists_k)
+    return loss / config['num_birds']
+
+
 def get_bounding_loss(pos_xyz_k3, vel_xyz_k3):
     """ Return a loss which penalizes birds for going out of bounds
     or exceeding the maximum velocity. """
     out_of_bounds_xyz_k3 = tf.maximum(
         tf.abs(pos_xyz_k3) - config['max_distance_from_origin'], 0.)
-    position_loss = tf.reduce_sum(out_of_bounds_xyz_k3)
+    position_loss = tf.reduce_sum(out_of_bounds_xyz_k3) ** 2.
     over_of_bounds_vel_xyz_k3 = tf.maximum(
         tf.abs(vel_xyz_k3) - config['max_velocity'], 0.)
     under_of_bounds_vel_xyz_k3 = tf.maximum(
         config['min_velocity'] - tf.abs(vel_xyz_k3), 0.)
-    velocity_loss = tf.reduce_sum(over_of_bounds_vel_xyz_k3) + \
-        tf.reduce_sum(under_of_bounds_vel_xyz_k3)
-    return (position_loss + velocity_loss) * config['boundary_weight']
+    velocity_loss = (tf.reduce_sum(over_of_bounds_vel_xyz_k3) + \
+        tf.reduce_sum(under_of_bounds_vel_xyz_k3)) ** 2.
+    return (position_loss + velocity_loss) / config['num_birds'] * config['boundary_weight']
 
 
-def get_separation_loss(pos_dist_mat_kk):
-    """ Return a loss which encourages birds to separate from each other
-    spatially within a certain radius. We return the negative mean
-    of the distances of all pairwise birds within the radius. """
-    dists_k = tf.gather_nd(
-        pos_dist_mat_kk, tf.where(pos_dist_mat_kk < config['separation_radius']))
-    return -tf.reduce_sum(dists_k / 2.) * config['separation_weight']
+def get_alignment_loss(pos_dist_mat_kk, vel_xyz_k3):
+    """ Return a loss which encourages birds to fly in the same direction as their neighbors. """
+    loss = top_k_euclidean_difference(pos_dist_mat_kk, vel_xyz_k3, config['alignment_top_k'])
+    return loss * config['alignment_weight']
 
 
-def get_alignment_loss(pos_dist_mat_kk, vel_dist_mat_kk):
-    """ Return a loss which encourages birds within a certain radius
-    to fly in a similar direction. """
-    vel_dists_k = tf.gather_nd(
-        vel_dist_mat_kk, tf.where(pos_dist_mat_kk < config['alignment_radius']))
-    return tf.reduce_sum(vel_dists_k / 2.) * config['alignment_weight']
+def get_cohesion_loss(pos_dist_mat_kk, pos_xyz_k3):
+    """ Return a loss which encourages birds to fly toward their neighbors' average position. """
+    loss = top_k_euclidean_difference(pos_dist_mat_kk, pos_xyz_k3, config['cohesion_top_k'])
+    return loss * config['cohesion_weight']
 
 
-def get_cohesion_loss(pos_dist_mat_kk):
-    """ Return a loss which encourages birds to fly together generally. """
-    return tf.reduce_sum(pos_dist_mat_kk / 2.) * config['cohesion_weight']
+def get_separation_loss(pos_dist_mat_kk, pos_xyz_k3):
+    """ Return a loss which encourages birds to separate from their neighbors"""
+    loss = top_k_euclidean_difference(pos_dist_mat_kk, pos_xyz_k3, config['separation_top_k'],
+                                      goal_dist=config['separation_goal_dist'])
+    return loss * config['separation_weight']
 
 
 def total_loss(pos_xyz_k3, vel_xyz_k3):
@@ -55,23 +78,19 @@ def total_loss(pos_xyz_k3, vel_xyz_k3):
     to the velocities, which are trainable variables. We add the velocities to the positions
     because some losses are computed with respect to the positions; these losses will produce
     velocity gradients which encourage lower position based losses. """
-
     pos_xyz_k3 += vel_xyz_k3
-    # add random noise to prevent falling into stable minimum
-    pos_xyz_k3 += tf.random_normal(shape=tf.shape(pos_xyz_k3), mean=0.0,
-                                   stddev=config['noise_std'], dtype=tf.float32)
     pos_dist_mat_kk = get_dist_mat(pos_xyz_k3)
-    vel_dist_mat_kk = get_dist_mat(vel_xyz_k3)
     bounding_loss = get_bounding_loss(pos_xyz_k3, vel_xyz_k3)
     bounding_loss = tf.Print(bounding_loss, [bounding_loss], 'bounding loss: ')
-    separation_loss = get_separation_loss(pos_dist_mat_kk)
+    separation_loss = get_separation_loss(pos_dist_mat_kk, pos_xyz_k3)
     separation_loss = tf.Print(separation_loss, [separation_loss], 'separation loss: ')
-    alignment_loss = get_alignment_loss(pos_dist_mat_kk, vel_dist_mat_kk)
+    alignment_loss = get_alignment_loss(pos_dist_mat_kk, vel_xyz_k3)
     alignment_loss = tf.Print(alignment_loss, [alignment_loss], 'alignment loss: ')
-    cohesion_loss = get_cohesion_loss(pos_dist_mat_kk)
+    cohesion_loss = get_cohesion_loss(pos_dist_mat_kk, pos_xyz_k3)
     cohesion_loss = tf.Print(cohesion_loss, [cohesion_loss], 'cohesion_loss loss: ')
-    
-    return bounding_loss + separation_loss + alignment_loss + cohesion_loss
+    loss = bounding_loss + alignment_loss + cohesion_loss + separation_loss
+    loss = tf.Print(loss, [loss], 'loss is: ')
+    return loss
 
 
 def main():
@@ -87,20 +106,18 @@ def main():
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
-    li, = ax.plot(pos_xyz_k3[:, 0],
-                  pos_xyz_k3[:, 1],
-                  pos_xyz_k3[:, 2], 'ro')
 
-    ax.relim() 
-    ax.autoscale_view(True, True, True)
-    fig.canvas.draw()
-    plt.show(block=False)
+    noise = np.random.randn(config['num_birds'], 3)
 
-    for _ in range(config['num_loops']):
+    for iteration in range(config['num_loops']):
+        print('On iteration {}'.format(iteration))
         try:
+            if iteration % config['noise_update'] == 0:
+                noise = np.random.randn(config['num_birds'], 3) * config['noise_std']
+
             _, l, new_vel_k3 = sess.run([train_op, loss, vel_xyz_k3],
-                                       feed_dict={pos_xyz_ph_k3: pos_xyz_k3})
-            pos_xyz_k3 += new_vel_k3
+                                        feed_dict={pos_xyz_ph_k3: pos_xyz_k3})
+            pos_xyz_k3 += new_vel_k3 + noise
             li, = ax.plot(pos_xyz_k3[:, 0],
                           pos_xyz_k3[:, 1],
                           pos_xyz_k3[:, 2], 'ro')
